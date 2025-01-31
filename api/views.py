@@ -1,43 +1,53 @@
 from rest_framework import status
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.generics import CreateAPIView, GenericAPIView, RetrieveAPIView, UpdateAPIView, DestroyAPIView, ListCreateAPIView
+from drf_spectacular.utils import extend_schema
+from pymemcache.client.base import Client
+import json
+
 from .serializers import RegisterSerializer, LoginSerializer, UserInfoSerializer, UserHealthInfoSerializer, \
     BloodGlucoseIndicatorSerializer, BloodPressureIndicatorSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.permissions import IsAuthenticated
-from .models import UserHealthIndicator, BloodGlucoseIndicator, BloodPressureIndicator
-from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from drf_spectacular import openapi
+from .models import UserHealthIndicator, User
+from .pagination import Pagination
+from .utils import save_blood_indicator
+
+client = Client('localhost')
 
 # auth
-class RegisterView(APIView):
+class RegisterView(CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
-
+    
     @extend_schema(
         request=RegisterSerializer,
         responses={201: UserInfoSerializer},
         description="Endpoint to register a new user"
     )
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            user_info_serializer = UserInfoSerializer(user.user_info)
-            user_health_info_serializer = UserHealthInfoSerializer(user.user_health_info)
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_201_CREATED,
-                "message": "User created successfully.",
-                "data": {
-                    "user_info": user_info_serializer.data,
-                    "user_health_info": user_health_info_serializer.data
-                }
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def perform_create(self, serializer):
+        user = serializer.save()
+        self.user_info_serializer = UserInfoSerializer(user.user_info)
+        self.user_health_info_serializer = UserHealthInfoSerializer(user.user_health_info)
+        
+    def create(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer=serializer)
+        return Response({
+            "status": "success",
+            "status_code": status.HTTP_201_CREATED,
+            "message": "User created successfully.",
+            "data": {
+                "user_info": self.user_info_serializer.data,
+                "user_health_info": self.user_health_info_serializer.data
+            }
+        }, status=status.HTTP_201_CREATED)
 
-class LoginView(APIView):
+class LoginView(GenericAPIView):
     permission_classes = [AllowAny]
+    serializer_class = LoginSerializer
     
     @extend_schema(
         request=LoginSerializer,
@@ -45,54 +55,47 @@ class LoginView(APIView):
         description="Endpoint to authenticate a user and return tokens"
     )
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.validated_data
-            
-            old_refresh_token = request.COOKIES.get('refresh_token')
-
-            if old_refresh_token:
-                try:
-                    old_refresh = RefreshToken(old_refresh_token)
-                    old_refresh.blacklist()
-                except Exception as e:
-                    pass
-            
-            user_info_serializer = {}
-            if hasattr(user, 'user_info') and user.user_info:
-                user_info_serializer = UserInfoSerializer(user.user_info).data
-            
-            user_health_info_serializer = {}
-            if hasattr(user, 'user_health_info') and user.user_health_info:
-                user_health_info_serializer = UserHealthInfoSerializer(user.user_health_info).data
-            
-            refresh = RefreshToken.for_user(user)
-            response = Response({
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data
+        
+        old_refresh_token = request.COOKIES.get('refresh_token')
+        if old_refresh_token:
+            try:
+                old_refresh = RefreshToken(old_refresh_token)
+                old_refresh.blacklist()
+            except Exception as e:
+                pass
+        
+        user_info_serializer = {}
+        if hasattr(user, 'user_info') and user.user_info:
+            user_info_serializer = UserInfoSerializer(user.user_info).data
+        
+        user_health_info_serializer = {}
+        if hasattr(user, 'user_health_info') and user.user_health_info:
+            user_health_info_serializer = UserHealthInfoSerializer(user.user_health_info).data
+        
+        refresh = RefreshToken.for_user(user)
+        response = Response({
                 "status": "success",
                 "status_code": status.HTTP_200_OK,
                 "message": "Login successful",
                 "data": {
                     "user_info": user_info_serializer,
                     "user_health_info": user_health_info_serializer,
-                },"access_token": str(refresh.access_token)}, 
-                status=status.HTTP_200_OK)
-            response.set_cookie(
-                key='refresh_token',
-                value=str(refresh),
-                httponly=True,
-                # secure=True,
-                samesite='Lax'
-            )
-            return response
-        print("Login view")
-        return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "Login failed",
-            "errors": serializer.errors
-            }, status=status.HTTP_400_BAD_REQUEST)
+                },
+                "access_token": str(refresh.access_token)
+            }, status=status.HTTP_200_OK)
+        response.set_cookie(
+            key='refresh_token',
+            value=str(refresh),
+            httponly=True,
+            # secure=True,
+            samesite='Lax'
+        )
+        return response
 
-class RefreshTokenView(APIView):
+class RefreshTokenView(GenericAPIView):
     permission_classes = [AllowAny]
     
     @extend_schema(
@@ -120,7 +123,7 @@ class RefreshTokenView(APIView):
                 "message": "Invalid refresh token", 
                 "errors": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-class LogoutView(APIView):
+class LogoutView(GenericAPIView):
     permission_classes = [AllowAny]
     
     @extend_schema(
@@ -151,216 +154,238 @@ class LogoutView(APIView):
         return response
 
 # User info
-class UserInfoView(APIView):
+class UserInfoView(RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserInfoSerializer
     
     @extend_schema(
-        responses={200: UserInfoSerializer},
+        responses={200: UserInfoSerializer, 404: None},
         description="Endpoint to retrieve user info",
     )
-    def get(self, request):
-        if hasattr(request.user, 'user_info') and request.user.user_info:
-            user_info_serializer = UserInfoSerializer(request.user.user_info)
+    def retrieve(self, request, *args, **kwargs):
+        user_info = getattr(request.user, 'user_info', None)
+        if not user_info:
             return Response({
-                "status": "success",
-                "status_code": status.HTTP_200_OK,
-                "message": "User info retrieved successfully",
-                "data": {
-                    "user_info": user_info_serializer.data
-                }}, status=status.HTTP_200_OK)
-        return Response({
-            "status": "error",
-            "status_code": status.HTTP_404_NOT_FOUND,
-            "message": "User info not found"
+                "status": "error",
+                "status_code": status.HTTP_404_NOT_FOUND,
+                "message": "User info not found"
             }, status=status.HTTP_404_NOT_FOUND)
+            
+        user_info_data = client.get(f"user_info_${request.user.id}")
+        if user_info_data:
+            user_info_data = json.loads(user_info_data.decode('utf-8'))
+        if not user_info_data:
+            user_info_serializer = self.get_serializer(user_info)
+            user_info_data = user_info_serializer.data
+            client.set(f"user_info_${request.user.id}", json.dumps(user_info_data).encode('utf-8'))
+            
+        return Response({
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User info retrieved successfully",
+            "data": {
+                "user_info": user_info_data
+            }}, status=status.HTTP_200_OK)
 
-class CreateUserInfoView(APIView):
+class CreateUserInfoView(CreateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserInfoSerializer
     
     @extend_schema(
         request=UserInfoSerializer,
         responses={201: UserInfoSerializer},
         description="Endpoint to create user info"
     )
-    def post(self, request):
-        serializer = UserInfoSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_201_CREATED,
-                "message": "User info created successfully",
-                "data": {
-                    "user_info": serializer.data
-                }}, status=status.HTTP_201_CREATED)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        client.set(f"user_info_${request.user.id}", json.dumps(serializer.data).encode('utf-8'))
+
+        
         return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "User info not created",
-            "errors": {
-                serializer.errors
-            }}, status=status.HTTP_400_BAD_REQUEST)
+            "status": "success",
+            "status_code": status.HTTP_201_CREATED,
+            "message": "User info created successfully",
+            "data": {
+                "user_info": serializer.data
+            }}, status=status.HTTP_201_CREATED)
             
-class UpdateUserInfo(APIView):
+class UpdateUserInfo(UpdateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserInfoSerializer
     
     @extend_schema(
         request=UserInfoSerializer,
-        responses={200: UserInfoSerializer},
+        responses={200: UserInfoSerializer, 404: None},
         description="Endpoint to update user info"
     )
-    def put(self, request):
-        if hasattr(request.user, 'user_info') and request.user.user_info:
-            user_info = request.user.user_info
-            serializer = UserInfoSerializer(user_info, data=request.data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({
-                    "status": "success",
-                    "status_code": status.HTTP_200_OK,
-                    "message": "User info updated successfully",
-                    "data": {
-                        "user_info": serializer.data
-                    }}, status=status.HTTP_200_OK)
-        else:
+    def update(self, request, *args, **kwargs):
+        user_info = getattr(request.user, 'user_info', None)
+        if not user_info:
             return Response({
                 "status": "error",
                 "status_code": status.HTTP_404_NOT_FOUND,
-                "message": "User info not found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response({
-                "status": "error",
-                "status_code": status.HTTP_400_BAD_REQUEST,
-                "message": "User info not updated",
-                "errors": {
-                    serializer.errors
-                }}, status=status.HTTP_400_BAD_REQUEST)
+                "message": "User info not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = self.get_serializer(user_info, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        client.set(f"user_info_${request.user.id}", json.dumps(serializer.data).encode('utf-8'))
 
-class DeleteUserInfo(APIView):
+        return Response({
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User info updated successfully",
+            "data": {
+                "user_info": serializer.data
+            }
+        }, status=status.HTTP_200_OK)
+        
+class DeleteUserInfo(DestroyAPIView):
     permission_classes = [IsAuthenticated]
+
     @extend_schema(
-        responses={200: None},
+        responses={200: None, 404: None},
         description="Endpoint to delete user info"
     )
-    def delete(self, request):
-        if hasattr(request.user, 'user_info') and request.user.user_info:
-            request.user.user_info.delete()
+    def destroy(self, request, *args, **kwargs):
+        user_info = getattr(request.user, 'user_info', None)
+        if not user_info:
             return Response({
-                "status": "success",
-                "status_code": status.HTTP_200_OK,
-                "message": "User info deleted successfully"}, status=status.HTTP_200_OK)
+                "status": "error",
+                "status_code": status.HTTP_404_NOT_FOUND,   
+                "message": "User info not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        user_info.delete()
+        client.delete(f"user_info_${request.user.id}")
         return Response({
-            "status": "error",
-            "status_code": status.HTTP_404_NOT_FOUND,
-            "message": "User info not found"}, status=status.HTTP_404_NOT_FOUND)
-
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User info deleted successfully"
+        }, status=status.HTTP_200_OK)
+        
 
 # User health info
-class UserHealthInfoView(APIView):
+class UserHealthInfoView(RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserHealthInfoSerializer
     
     @extend_schema(
         responses={200: UserHealthInfoSerializer},
         description="Retrieve user health information"
     )
-    def get(self, request):
-        if hasattr(request.user, 'user_health_info') and request.user.user_health_info:
-            user_health_info_serializer = UserHealthInfoSerializer(request.user.user_health_info)
+    def retrieve(self, request, *args, **kwargs):
+        user_health_info = getattr(request.user, 'user_health_info', None)
+        if not user_health_info:
             return Response({
-                "status": "success",
-                "status_code": status.HTTP_200_OK,
-                "message": "User health info retrieved successfully",
-                "data": {
-                    "user_info": user_health_info_serializer.data
-                }}, status=status.HTTP_200_OK)
+                "status": "error",
+                "status_code": status.HTTP_404_NOT_FOUND,
+                "message": "User health info not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        user_health_info_data = client.get(f"user_health_info_${request.user.id}")
+        if user_health_info_data:
+            user_health_info_data = json.loads(user_health_info_data.decode('utf-8'))
+        else:
+            user_health_info_serializer = self.get_serializer(user_health_info)
+            user_health_info_data = user_health_info_serializer.data
+            client.set(f"user_health_info_${request.user.id}", json.dumps(user_health_info_data).encode('utf-8'))
+        
         return Response({
-            "status": "error",
-            "status_code": status.HTTP_404_NOT_FOUND,
-            "message": "User health info not found"}, status=status.HTTP_404_NOT_FOUND)
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User health info retrieved successfully",
+            "data": {
+                "user_health_info": user_health_info_data
+            }
+        }, status=status.HTTP_200_OK)
 
-class CreateUserHealthInfo(APIView):
+class CreateUserHealthInfo(CreateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserHealthInfoSerializer
     
     @extend_schema(
         request=UserHealthInfoSerializer,
         responses={201: UserHealthInfoSerializer},
         description="Create user health information"
     )
-    def post(self, request):
-        serializer = UserHealthInfoSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_201_CREATED,
-                "message": "User health info created successfully",
-                "data": {
-                    "user_health_info": serializer.data
-                }}, status=status.HTTP_201_CREATED)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        client.set(f"user_health_info_${request.user.id}", json.dumps(serializer.data).encode('utf-8'))
         return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "User health info not created",
-            "errors": {
-                serializer.errors
-            }}, status=status.HTTP_400_BAD_REQUEST)
+            "status": "success",
+            "status_code": status.HTTP_201_CREATED,
+            "message": "User health info created successfully",
+            "data": {
+                "user_health_info": serializer.data
+            }}, status=status.HTTP_201_CREATED)
 
-class UpdateUserHealthInfo(APIView):
+class UpdateUserHealthInfo(UpdateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserHealthInfoSerializer
     
     @extend_schema(
         request=UserHealthInfoSerializer,
         responses={200: UserHealthInfoSerializer},
         description="Update user health information"
     )
-    def put(self, request):
-        if hasattr(request.user, 'user_health_info') and request.user.user_health_info:
-            user_health_info = request.user.user_health_info
-            serializer = UserHealthInfoSerializer(user_health_info, data=request.data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({
-                    "status": "success",
-                    "status_code": status.HTTP_200_OK,
-                    "message": "User health info updated successfully",
-                    "data": {
-                        "user_health_info": serializer.data
-                    }}, status=status.HTTP_200_OK)
-            return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "User health info not updated",
-            "errors": {
-                serializer.errors
-            }}, status=status.HTTP_400_BAD_REQUEST)
-        else:
+    def update(self, request, *args, **kwargs):
+        user_health_info = getattr(request.user, 'user_health_info', None)
+        if not user_health_info:
             return Response({
                 "status": "error",
                 "status_code": status.HTTP_404_NOT_FOUND,
-                "message": "User health info not found"}, status=status.HTTP_404_NOT_FOUND)
+                "message": "User health info not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = self.get_serializer(user_health_info, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        client.set(f"user_health_info_${request.user.id}", json.dumps(serializer.data))
+        return Response({
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User health info updated successfully",
+            "data": {
+                "user_health_info": serializer.data
+            }
+        }, status=status.HTTP_200_OK)
 
-class DeleteUserHealthInfo(APIView):
+class DeleteUserHealthInfo(DestroyAPIView):
     permission_classes = [IsAuthenticated]
     
     @extend_schema(
         responses={200: None},
         description="Delete user health information"
     )
-    def delete(self, request):
-        if hasattr(request.user, 'user_health_info') and request.user.user_health_info:
-            request.user.user_health_info.delete()
+    def destroy(self, request, *args, **kwargs):
+        user_health_info = getattr(request.user, 'user_health_info', None)
+        if not user_health_info:
             return Response({
-                "status": "success",
-                "status_code": status.HTTP_200_OK,
-                "message": "User health info deleted successfully"}, status=status.HTTP_200_OK)
+                "status": "error",
+                "status_code": status.HTTP_404_NOT_FOUND,
+                "message": "User health info not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        user_health_info.delete()
+        client.delete(f"user_health_info_${request.user.id}")
         return Response({
-            "status": "error",
-            "status_code": status.HTTP_404_NOT_FOUND,
-            "message": "User health info not found"}, status=status.HTTP_404_NOT_FOUND)
-
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "User health info deleted successfully"
+        }, status=status.HTTP_200_OK)
 
 # User Blood Glucose Indicator
-class BloodGlucoseIndicatorView(APIView):
+class BloodGlucoseIndicatorView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = BloodGlucoseIndicatorSerializer
+    pagination_class = Pagination
     
     @extend_schema(
         request=BloodGlucoseIndicatorSerializer,
@@ -369,58 +394,44 @@ class BloodGlucoseIndicatorView(APIView):
     )
     def post(self, request):
         user_id = request.user.id
+        result = save_blood_indicator(user_id, request.data)
+        return Response(result, status=status.HTTP_201_CREATED)
+    
+    def get_queryset(self):
+        user_id = self.request.user.id
         try:
             user_health_indicator = UserHealthIndicator.objects.get(user_id=user_id)
+            return user_health_indicator.blood_glucose_list
         except UserHealthIndicator.DoesNotExist:
-            user_health_indicator = UserHealthIndicator(user_id=user_id, blood_glucose_list=[], blood_pressure_list=[])
-            user_health_indicator.save()
-        
-        serializer = BloodGlucoseIndicatorSerializer(data=request.data)
-        if serializer.is_valid():
-            blood_glucose = BloodGlucoseIndicator(**serializer.validated_data)
-            user_health_indicator.blood_glucose_list.insert(0, blood_glucose)
-            user_health_indicator.save()
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_201_CREATED,
-                "message": "Blood glucose indicator created successfully",
-                "data": {
-                    "blood_glucose_indicator": serializer.data
-                }}, status=status.HTTP_201_CREATED)
-        return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "Blood glucose indicator not created",
-            "errors": {
-                serializer.errors
-            }}, status=status.HTTP_400_BAD_REQUEST)
-    
+            return []
     
     @extend_schema(
         responses={200: BloodGlucoseIndicatorSerializer(many=True)},
         description="Retrieve all blood glucose indicators"
     )
     def get(self, request):
-        user_id = request.user.id
-        try:
-            user_health_indicator = UserHealthIndicator.objects.get(user_id=user_id)
-            blood_glucose_list = user_health_indicator.blood_glucose_list
-            serializer = BloodGlucoseIndicatorSerializer(blood_glucose_list, many=True)
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_200_OK,
-                "message": "Blood glucose indicator retrieved successfully",
-                "data": {
-                    "blood_glucose_list": serializer.data
-                }}, status=status.HTTP_200_OK)
-        except UserHealthIndicator.DoesNotExist:
-            return Response({
-                "status": "error",
-                "status_code": status.HTTP_404_NOT_FOUND,
-                "message": "Blood glucose indicator not found"}, status=status.HTTP_404_NOT_FOUND)
+        queryset = list(self.get_queryset())
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, "glucose")
+        
+        if page is not None:
+            return paginator.get_paginated_response(page, "Retrieve blood glucose indicator list", "blood_glucose_list")
+        
+        serializer = BloodGlucoseIndicatorSerializer(queryset, many=True)
+        
+        return Response({
+            "status": "success",
+            "status_code": status.HTTP_200_OK,
+            "message": "Blood glucose indicator retrieved successfully",
+            "data": {
+                "blood_glucose_list": serializer.data
+            }
+        }, status=status.HTTP_200_OK)
 
-class BloodPressureIndicatorView(APIView):
+class BloodPressureIndicatorView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = BloodPressureIndicatorSerializer
+    pagination_class = Pagination
     
     @extend_schema(
         request=BloodPressureIndicatorSerializer,
@@ -429,52 +440,38 @@ class BloodPressureIndicatorView(APIView):
     )
     def post(self, request):
         user_id = request.user.id
+        result = save_blood_indicator(user_id, request.data)
+        return Response(result, status=status.HTTP_201_CREATED)
+        
+    def get_queryset(self):
+        user_id = self.request.user.id
         try:
             user_health_indicator = UserHealthIndicator.objects.get(user_id=user_id)
+            return user_health_indicator.blood_pressure_list
         except UserHealthIndicator.DoesNotExist:
-            user_health_indicator = UserHealthIndicator(user_id=user_id, blood_glucose_list=[], blood_pressure_list=[])
-            user_health_indicator.save()
-        
-        serializer = BloodPressureIndicatorSerializer(data=request.data)
-        if serializer.is_valid():
-            blood_pressure = BloodPressureIndicator(**serializer.validated_data)
-            user_health_indicator.blood_pressure_list.insert(0, blood_pressure)
-            user_health_indicator.save()
-            return Response({
-                "status": "success",
-                "status_code": status.HTTP_201_CREATED,
-                "message": "Blood pressure indicator created successfully",
-                "data": {
-                    "blood_pressure_indicator": serializer.data
-                }}, status=status.HTTP_201_CREATED)
-        return Response({
-            "status": "error",
-            "status_code": status.HTTP_400_BAD_REQUEST,
-            "message": "Blood pressure indicator not created",
-            "errors": {
-                serializer.errors
-            }}, status=status.HTTP_400_BAD_REQUEST)
-    
+            return []
     
     @extend_schema(
         responses={200: BloodPressureIndicatorSerializer(many=True)},
         description="Retrieve all blood pressure indicators"
     )
     def get(self, request):
-        user_id = request.user.id
         try:
-            user_health_indicator = UserHealthIndicator.objects.get(user_id=user_id)
-            blood_pressure_list = user_health_indicator.blood_pressure_list
-            serializer = BloodPressureIndicatorSerializer(blood_pressure_list, many=True)
+            queryset = list(self.get_queryset())
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(queryset, request, "pressure")
+            
+            if page is not None:
+                return paginator.get_paginated_response(page, "Retrieve blood pressure indicator list", "blood_pressure_list")
+            
+            serializer = BloodPressureIndicatorSerializer(queryset, many=True)
             return Response({
                 "status": "success",
                 "status_code": status.HTTP_200_OK,
                 "message": "Blood pressure indicator retrieved successfully",
                 "data": {
                     "blood_pressure_list": serializer.data
-                }}, status=status.HTTP_200_OK)
-        except UserHealthIndicator.DoesNotExist:
-            return Response({
-                "status": "error",
-                "status_code": status.HTTP_404_NOT_FOUND,
-                "message": "Blood pressure indicator not found"}, status=status.HTTP_404_NOT_FOUND)
+                }
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(e)

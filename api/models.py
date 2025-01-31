@@ -4,7 +4,7 @@ from django.core.validators import RegexValidator
 from django.contrib.auth.hashers import make_password, check_password
 from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
 from .managers import UserManager
-from mongoengine import Document, fields, ListField, EmbeddedDocumentField, EmbeddedDocument
+from mongoengine import fields, QuerySet
 from datetime import datetime
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -14,7 +14,7 @@ class User(AbstractBaseUser, PermissionsMixin):
                 message="The phone number must start with 0 and have 10 digits."
             )
         ])
-    pin = models.CharField(max_length=128, validators=[RegexValidator(regex=r'^\d{6}$', message="PIN must be 6 digits long.")], null=False, blank=False)
+    pin = models.CharField(max_length=128, null=False, blank=False)
     is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(auto_now_add=True)
     last_login = models.DateTimeField(auto_now=True)
@@ -36,12 +36,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def check_pin(self, raw_pin):
         return check_password(raw_pin, self.pin)
-    
+
 class UserInfo(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='user_info')
     full_name = models.CharField(max_length=255, null=False, blank=False)
     date_of_birth = models.DateField(null=False, blank=False)
-    gender = models.CharField(max_length=5, choices=[('Nam', 'Nam'), ('Nữ', 'Nữ')], null=False, blank=False)
+    gender = models.CharField(max_length=6, choices=[('Male', 'Male'), ('Female', 'Female')], null=False, blank=False)
     
     def __str__(self):
         return f"UserInfo for {self.full_name}"
@@ -62,25 +62,24 @@ class UserHealthInfo(models.Model):
     def __str__(self):
         return f"UserHealthInfo for {self.user.phone_number}"
 
-class BloodGlucoseIndicator(EmbeddedDocument):
+class BloodGlucoseIndicator(fields.EmbeddedDocument):
     blood_glucose_indicator = fields.FloatField(required=True)
     unit = fields.StringField(choices=["mg/dL", "mmol/L"], required=True)
     timestamp = fields.DateTimeField(default=datetime.now)
     meal = fields.StringField(choices=["pre-meal", "post-meal", "fasting", "before go to bed"], required=True)
 
-class BloodPressureIndicator(EmbeddedDocument):
+class BloodPressureIndicator(fields.EmbeddedDocument):
     systolic_indicator = fields.IntField(required=True)
     diastolic_indicator = fields.IntField(required=True)
     unit = fields.StringField(default="mm Hg")
     timestamp = fields.DateTimeField(default=datetime.now)
     
-class UserHealthIndicator(Document):
+class UserHealthIndicator(fields.Document):
     user_id = fields.IntField(required=True, unique=True)
-    blood_glucose_list = ListField(EmbeddedDocumentField(BloodGlucoseIndicator))
-    blood_pressure_list = ListField(EmbeddedDocumentField(BloodPressureIndicator))
+    blood_glucose_list = fields.ListField(fields.EmbeddedDocumentField(BloodGlucoseIndicator))
+    blood_pressure_list = fields.ListField(fields.EmbeddedDocumentField(BloodPressureIndicator))
     meta = {
         'collection': 'user_health_indicator',
         'indexes': ['user_id'],
-        'ordering': ['-timestamp']
+        'ordering': ['-timestamp'],
     }
-    

@@ -3,30 +3,14 @@ from .models import User, UserInfo, UserHealthInfo, UserHealthIndicator, BloodGl
 from django.core.validators import MinValueValidator, MaxValueValidator
 from datetime import datetime
 from .exceptions import ValidationException
+import re
 
-# auth serializers
 class RegisterSerializer(serializers.ModelSerializer):
-    full_name = serializers.CharField(max_length=255, required=True, error_messages={
-            'required': 'Please enter your full name',
-            'max_length': 'Full name must be less than 255 characters'
-        })
-    date_of_birth = serializers.DateField(required=True, error_messages={'required': 'Please enter your date of birth'})
-    gender = serializers.ChoiceField(choices=[('Nam', 'Nam'), ('Nữ', 'Nữ')], required=True, 
-                                     error_messages={'required': 'Please select gender'})
-    height = serializers.FloatField(
-        required=True,
-        validators=[
-            MinValueValidator(1.0, message="Height must greater than 1 cm"),
-            MaxValueValidator(300.0, message="Height must less than 300 cm"),
-        ]
-    )
-    weight = serializers.FloatField(
-        required=True,
-        validators=[
-            MinValueValidator(1.0, message="Weight must greater than 1 kg"),
-            MaxValueValidator(1000.0, message="Weight must less than 1000 kg"),
-        ]
-    )
+    full_name = serializers.CharField(max_length=255, required=True)
+    date_of_birth = serializers.DateField(required=True)
+    gender = serializers.CharField(required=True)
+    height = serializers.FloatField(required=True)
+    weight = serializers.FloatField(required=True)
     
     class Meta:
         model = User
@@ -35,14 +19,48 @@ class RegisterSerializer(serializers.ModelSerializer):
             'pin': {'write_only': True}
         }
     
-    def validate(self, data):
-        date_of_birth = data.get('date_of_birth')
-        if date_of_birth and date_of_birth > datetime.now().date():
-            raise ValidationException({
-                "message": "Register serializer error",
-                "errors": {
-                    "date_of_birth": "Date of birth cannot be in the future."
-                }})
+    def validate_date_of_birth(self, data):
+        if data > datetime.now().date():
+            raise ValidationException(
+                errors= {
+                    "date_of_birth": [
+                        "Date of birth cannot be in the future."
+                    ]
+                }
+            )
+        return data
+    
+    def validate_gender(self, data):
+        if data not in ["Male", "Female"]:
+            raise ValidationException(
+                    errors= {
+                        "gender": [
+                            "Gender must be Male or Female."
+                        ]
+                    }
+                )
+        return data
+    
+    def validate_height(self, data):
+        if data > 300 or data < 1:
+            raise ValidationException(
+                errors= {
+                    "height": [
+                        "Height must be greater than 1cm and less than 300cm."
+                    ]
+                }
+            )
+        return data
+
+    def validate_weight(self, data):
+        if data > 1000 or data < 1:
+            raise ValidationException(
+                errors= {
+                    "weight": [
+                        "weight must be greater than 1kg and less than 1000kg."
+                    ]
+                }
+            )
         return data
     
     def create(self, validated_data):
@@ -64,8 +82,30 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
     
 class LoginSerializer(serializers.Serializer):
-    phone_number = serializers.CharField()
+    phone_number = serializers.CharField(required=True)
     pin = serializers.CharField(write_only=True)
+    
+    def validate_phone_number(self, data):
+        if not re.fullmatch(r"0\d{9}", data):
+            raise ValidationException(
+                errors= {
+                    "phone_number": [
+                        "Phone number must start with 0 and be exactly 10 digits."
+                    ]
+                }
+            )
+        return data 
+    
+    def validate_pin(self, data):
+        if not re.fullmatch(r"\d{6}", data):
+            raise ValidationException(
+                errors= {
+                    "pin": [
+                        "Pin must be exactly 6 digits."
+                    ]
+                }
+            )
+        return data 
 
     def validate(self, data):
         phone_number = data.get('phone_number')
@@ -86,7 +126,6 @@ class LoginSerializer(serializers.Serializer):
         return user
     
     
-# user info serializers
 class UserInfoSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserInfo
@@ -130,19 +169,45 @@ class UserHealthInfoSerializer(serializers.ModelSerializer):
         return representation
 
 
-# health indicator serializers
 class BloodGlucoseIndicatorSerializer(serializers.Serializer):
     blood_glucose_indicator = serializers.FloatField()
     unit = serializers.ChoiceField(choices=["mg/dL", "mmol/L"])
     meal = serializers.ChoiceField(choices=["pre-meal", "post-meal", "fasting", "before bed"])
     timestamp = serializers.DateTimeField(default=datetime.now, format="%Y-%m-%d %H:%M:%S")
     
+    def validate_blood_glucose_indicator(self, value):
+        if value <= 0:
+            raise ValidationException("Blood glucose indicator must be greater than 0")
+        return value
+    
 class BloodPressureIndicatorSerializer(serializers.Serializer):
     systolic_indicator = serializers.IntegerField()
     diastolic_indicator = serializers.IntegerField()
-    unit = serializers.CharField(default="mm Hg")
+    unit = serializers.ChoiceField(choices=["mm Hg"])
     timestamp = serializers.DateTimeField(default=datetime.now, format="%Y-%m-%d %H:%M:%S")
-
+    
+    def validate_systolic_indicator(self, data):
+        if data <= 0:
+            raise ValidationException(
+                errors= {
+                    "systolic_indicator": [
+                        "Systolic indicator must be greater than 0 mm Hg"
+                    ]
+                }
+            )
+        return data
+    
+    def validate_diastolic_indicator(self, data):
+        if data <= 0:
+            raise ValidationException(
+                errors= {
+                    "diastolic_indicator": [
+                        "Diastolic indicator must be greater than 0 mm Hg"
+                    ]
+                }
+            )
+        return data
+    
 class UserHealthIndicatorSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
     blood_glucose_list = BloodGlucoseIndicatorSerializer(many=True)

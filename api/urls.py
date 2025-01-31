@@ -9,12 +9,12 @@ urlpatterns = [
     path('logout/', LogoutView.as_view(), name='logout'),
     path('refresh-token/', RefreshTokenView.as_view(), name='refresh-token'),
     
-    path('user-info/', UserInfoView.as_view(), name='user-info'),
+    path('user-info/', UserInfoView.as_view(), name='get-user-info'),
     path('create-user-info/', CreateUserInfoView.as_view(), name='create-user-info'),
     path('update-user-info/', UpdateUserInfo.as_view(), name='update-user-info'),
     path('delete-user-info/', DeleteUserInfo.as_view(), name='delete-user-info'),
     
-    path('user-health-info/', UserHealthInfoView.as_view(), name='user-health-info'),
+    path('user-health-info/', UserHealthInfoView.as_view(), name='get-user-health-info'),
     path('create-user-health-info/', CreateUserHealthInfo.as_view(), name='create-user-health-info'),
     path('update-user-health-info/', UpdateUserHealthInfo.as_view(), name='update-user-health-info'),
     path('delete-user-health-info/', DeleteUserHealthInfo.as_view(), name='delete-user-health-info'),
