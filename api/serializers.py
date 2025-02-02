@@ -19,6 +19,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             'pin': {'write_only': True}
         }
     
+    def validate_pin(self, data):
+        if not re.fullmatch(r"\d{6}", data):
+            raise ValidationException(
+                errors= {
+                    "pin": [
+                        "Pin must be exactly 6 digits."
+                    ]
+                }
+            )
+        return data
+    
     def validate_date_of_birth(self, data):
         if data > datetime.now().date():
             raise ValidationException(
